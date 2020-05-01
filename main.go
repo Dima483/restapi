@@ -1,35 +1,70 @@
 package main
 
 import (
-	"encoding/json"
+	"database/sql"  //
+	"encoding/json" //
+	"fmt"           //
+	"io/ioutil"     //
 	"log"
-	"math/rand"
-	"net/http"
-	"strconv"
+	"net/http" //
 
 	"github.com/gorilla/mux"
 )
 
+//
+var db *sql.DB
+var err error
+
+func main() {
+	//Init Router
+	router := mux.NewRouter()
+
+	//
+	db, err = sql.Open("mysql", "root:password@/Books") //
+	if err != nil {
+		panic(err.Error())
+	}
+	defer db.Close()
+
+	//Route Handlers/Endpoints
+	router.HandleFunc("/books", getBooks).Methods("GET")
+	router.HandleFunc("/books", createBook).Methods("POST")
+	router.HandleFunc("/books/{id}", getBook).Methods("GET")
+	router.HandleFunc("/books/{id}", updateBook).Methods("PUT")
+	router.HandleFunc("/books/{id}", deleteBook).Methods("DELETE")
+
+	log.Fatal(http.ListenAndServe(":8000", router))
+}
+
 //Book Struct
 type Book struct {
-	ID     string  `json:"id"`
-	Isbn   string  `json:"isbn"`
-	Title  string  `json:"title"`
-	Author *Author `json:"author"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
 }
 
-//Author Struct
-type Author struct {
-	Firstname string `json:"firstname"`
-	Lastname  string `json:"lastname"`
-}
-
-//Init books var as a slice Book struct
+//books
 var books []Book
 
 //Get All Books
 func getBooks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	result, err := db.Query("SELECT id, title from books")
+	if err != nil {
+		panic(err.Error())
+	}
+
+	defer result.Close()
+
+	for result.Next() {
+		var book Book
+		err := result.Scan(&book.ID, &book.Title)
+		if err != nil {
+			panic(err.Error())
+		}
+		books = append(books, book)
+	}
+
 	json.NewEncoder(w).Encode(books)
 }
 
@@ -37,69 +72,88 @@ func getBooks(w http.ResponseWriter, r *http.Request) {
 func getBook(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	params := mux.Vars(r) //Get params
-	//Loop through books and find with id
-	for _, item := range books {
-		if item.ID == params["id"] {
-			json.NewEncoder(w).Encode(item)
-			return
-		}
+
+	result, err := db.Query("SELECT id,title FROM books WHERE id = ?", params["id"])
+	if err != nil {
+		panic(err.Error())
 	}
-	json.NewEncoder(w).Encode(&Book{})
+
+	defer result.Close()
+
+	var book Book
+
+	for result.Next() {
+		var book Book
+		err := result.Scan(&book.ID, &book.Title)
+		if err != nil {
+			panic(err.Error())
+		}
+		books = append(books, book)
+	}
+
+	json.NewEncoder(w).Encode(book)
 }
 
 //Create a New Book
 func createBook(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	var book Book
-	_ = json.NewDecoder(r.Body).Decode(&book)
-	book.ID = strconv.Itoa(rand.Intn(100)) //Mock ID - not safe - just for example
-	books = append(books, book)
-	json.NewEncoder(w).Encode(book)
+	stmt, err := db.Prepare("INSERT INTO books(title) VALUES(?)")
+	if err != nil {
+		panic(err.Error())
+	}
+
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	keyVal := make(map[string]string)
+	json.Unmarshal(body, &keyVal)
+	title := keyVal["title"]
+
+	_, err = stmt.Exec(title)
+	if err != nil {
+		panic(err.Error())
+	}
+	fmt.Fprintf(w, "New book was created")
 }
 
 func updateBook(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	params := mux.Vars(r)
-	for index, item := range books {
-		if item.ID == params["id"] {
-			books = append(books[:index], books[index+1:]...)
-			var book Book
-			_ = json.NewDecoder(r.Body).Decode(&book)
-			book.ID = params["id"]
-			books = append(books, book)
-			json.NewEncoder(w).Encode(book)
-			return
-		}
+
+	stmt, err := db.Prepare("UPDATE books SET title = ? WHERE id = ?")
+	if err != nil {
+		panic(err.Error())
 	}
-	json.NewEncoder(w).Encode(books)
+
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	keyVal := make(map[string]string)
+	json.Unmarshal(body, &keyVal)
+	newTitle := keyVal["title"]
+
+	_, err = stmt.Exec(newTitle, params["id"])
+	if err != nil {
+		panic(err.Error())
+	}
+
+	fmt.Fprintf(w, "Book with id = %s was updated", params["id"])
 }
 
 func deleteBook(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	params := mux.Vars(r)
-	for index, item := range books {
-		if item.ID == params["id"] {
-			books = append(books[:index], books[index+1:]...)
-			break
-		}
+
+	stmt, err := db.Prepare("DELETE from books WHERE id = ?")
+	if err != nil {
+		panic(err.Error())
 	}
-	json.NewEncoder(w).Encode(books)
-}
 
-func main() {
-	//Init Router
-	router := mux.NewRouter()
+	_, err = stmt.Exec(params["id"])
+	if err != nil {
+		panic(err.Error())
+	}
 
-	//Mock Data - @todo - implement DB
-	books = append(books, Book{ID: "1", Isbn: "112233", Title: " 1 Book", Author: &Author{Firstname: "a0", Lastname: "a1"}})
-	books = append(books, Book{ID: "2", Isbn: "123321", Title: " 2 Book", Author: &Author{Firstname: "g0", Lastname: "g1"}})
-
-	//Route Handlers/Endpoints
-	router.HandleFunc("/api/books", getBooks).Methods("GET")
-	router.HandleFunc("/api/books/{id}", getBook).Methods("GET")
-	router.HandleFunc("/api/books", createBook).Methods("POST")
-	router.HandleFunc("/api/books/{id}", updateBook).Methods("PUT")
-	router.HandleFunc("/api/books/{id}", deleteBook).Methods("DELETE")
-
-	log.Fatal(http.ListenAndServe(":8000", router))
+	fmt.Fprintf(w, "Book with ID %s was deleted", params["id"])
 }
